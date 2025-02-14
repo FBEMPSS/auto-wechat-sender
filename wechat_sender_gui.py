@@ -141,6 +141,53 @@ def send_precise_message():
         logging.error(f"发送消息失败: {str(e)}")
         return False
 
+def send_precise_message_with_delay_test(target_time):
+    """带延时测试的消息发送"""
+    # 提前获取时间戳，避免在发送过程中获取时间
+    target_timestamp_ms = target_time.timestamp() * 1000
+    
+    try:
+        hwnd = win32gui.GetForegroundWindow()
+        if not hwnd:
+            raise Exception("无法获取窗口句柄")
+        
+        # 确保在输入框区域点击一下
+        rect = win32gui.GetWindowRect(hwnd)
+        input_x = rect[0] + (rect[2] - rect[0]) // 2
+        input_y = rect[3] - 50
+        pyautogui.click(input_x, input_y)
+        
+        # 准备发送，记录即将发送的时间
+        pre_send_time = time.time() * 1000
+        
+        # Ctrl+V粘贴消息
+        win32api.keybd_event(0x11, 0, 0, 0)  # Ctrl down
+        win32api.keybd_event(0x56, 0, 0, 0)  # V down
+        win32api.keybd_event(0x56, 0, win32con.KEYEVENTF_KEYUP, 0)  # V up
+        win32api.keybd_event(0x11, 0, win32con.KEYEVENTF_KEYUP, 0)  # Ctrl up
+        
+        # 立即记录发送时间
+        actual_send_time = time.time() * 1000
+        
+        # 发送回车
+        win32api.keybd_event(0x0D, 0, 0, 0)  # Enter down
+        win32api.keybd_event(0x0D, 0, win32con.KEYEVENTF_KEYUP, 0)  # Enter up
+        
+        # 计算延时（毫秒）
+        delay_ms = actual_send_time - target_timestamp_ms
+        preparation_ms = actual_send_time - pre_send_time
+        
+        # 使用队列延迟输出日志，避免影响发送时间
+        return True, {
+            'delay_ms': delay_ms,
+            'preparation_ms': preparation_ms,
+            'target_time': target_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3],
+            'actual_time': datetime.fromtimestamp(actual_send_time/1000).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        }
+        
+    except Exception as e:
+        return False, str(e)
+
 def datetime_to_timestamp(dt):
     """转换datetime为时间戳"""
     return dt.timestamp()
@@ -155,6 +202,7 @@ class WeChatSenderGUI:
         self.create_widgets()
         self.running = False
         self.paused = False  # 添加暂停状态标志
+        self.test_delay = False  # 添加延时测试开关标志
         
     def setup_logging(self):
         """设置日志处理"""
@@ -224,6 +272,16 @@ class WeChatSenderGUI:
         self.pause_button = ttk.Button(button_frame, text="暂停任务", command=self.pause_task, state='disabled')
         self.pause_button.pack(side=tk.LEFT, padx=5)
         
+        # 延时测试开关
+        self.delay_test_var = tk.BooleanVar(value=False)
+        self.delay_test_check = ttk.Checkbutton(
+            button_frame, 
+            text="测试发送延时",
+            variable=self.delay_test_var,
+            command=self.toggle_delay_test
+        )
+        self.delay_test_check.pack(side=tk.LEFT, padx=5)
+        
         # 进度条
         self.progress = ttk.Progressbar(main_frame, length=400, mode='determinate')
         self.progress.grid(row=5, column=0, columnspan=3, pady=5)
@@ -234,6 +292,14 @@ class WeChatSenderGUI:
         
         # 开始更新日志显示
         self.update_log_display()
+    
+    def toggle_delay_test(self):
+        """切换延时测试开关"""
+        self.test_delay = self.delay_test_var.get()
+        if self.test_delay:
+            logging.info("已开启发送延时测试")
+        else:
+            logging.info("已关闭发送延时测试")
     
     def get_target_datetime(self):
         """获取用户选择的目标时间"""
@@ -307,6 +373,32 @@ class WeChatSenderGUI:
                 break
         self.root.after(100, self.update_log_display)
         
+    def send_with_delay_test(self, target_time):
+        """带延时测试的消息发送"""
+        try:
+            # 记录目标时间的时间戳（精确到毫秒）
+            target_timestamp_ms = target_time.timestamp() * 1000
+            
+            # 发送消息
+            if send_precise_message():
+                # 记录实际发送时间的时间戳
+                actual_timestamp_ms = time.time() * 1000
+                
+                # 计算延时（毫秒）
+                delay_ms = actual_timestamp_ms - target_timestamp_ms
+                
+                logging.info(f"消息发送成功！")
+                logging.info(f"目标时间: {target_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
+                logging.info(f"实际时间: {datetime.fromtimestamp(actual_timestamp_ms/1000).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}")
+                logging.info(f"发送延时: {delay_ms:.2f}毫秒")
+                return True
+            else:
+                logging.error("消息发送失败！")
+                return False
+        except Exception as e:
+            logging.error(f"发送消息时出错: {str(e)}")
+            return False
+    
     def run_task(self, friend_name, message, target_time):
         """运行发送任务"""
         try:
@@ -322,14 +414,24 @@ class WeChatSenderGUI:
             target_timestamp = datetime_to_timestamp(target_time)
             self.countdown(target_timestamp)
             
-            # 如果是暂停状态，不发送消息
+            # 根据开关选择发送方式
             if not self.paused and self.running:
-                # 发送消息
-                if send_precise_message():
-                    logging.info("消息发送成功！")
+                if self.test_delay:
+                    success, result = send_precise_message_with_delay_test(target_time)
+                    if success:
+                        logging.info("消息发送成功！")
+                        logging.info(f"目标时间: {result['target_time']}")
+                        logging.info(f"实际时间: {result['actual_time']}")
+                        logging.info(f"发送延时: {result['delay_ms']:.2f}毫秒")
+                        logging.info(f"准备耗时: {result['preparation_ms']:.2f}毫秒")
+                    else:
+                        logging.error(f"消息发送失败: {result}")
                 else:
-                    logging.error("消息发送失败！")
-                
+                    if send_precise_message():
+                        logging.info("消息发送成功！")
+                    else:
+                        logging.error("消息发送失败！")
+                        
         except Exception as e:
             logging.error(f"发生错误: {str(e)}")
         finally:
