@@ -37,7 +37,7 @@ def prepare_chat(friend_name):
             raise Exception("未找到微信窗口")
         
         # 确保窗口可见且处于前台
-        if win32gui.IsIconic(hwnd):
+        if (win32gui.IsIconic(hwnd)):
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
         win32gui.SetForegroundWindow(hwnd)
         time.sleep(1.0)
@@ -154,6 +154,7 @@ class WeChatSenderGUI:
         self.setup_logging()
         self.create_widgets()
         self.running = False
+        self.paused = False  # 添加暂停状态标志
         
     def setup_logging(self):
         """设置日志处理"""
@@ -211,9 +212,17 @@ class WeChatSenderGUI:
         self.second_entry = ttk.Entry(time_frame, textvariable=self.second_var, width=2)
         self.second_entry.pack(side=tk.LEFT)
         
-        # 控制按钮
-        self.start_button = ttk.Button(main_frame, text="开始任务", command=self.start_task)
-        self.start_button.grid(row=4, column=0, columnspan=3, pady=10)
+        # 按钮框架
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=4, column=0, columnspan=3, pady=10)
+        
+        # 开始按钮
+        self.start_button = ttk.Button(button_frame, text="开始任务", command=self.start_task)
+        self.start_button.pack(side=tk.LEFT, padx=5)
+        
+        # 暂停按钮
+        self.pause_button = ttk.Button(button_frame, text="暂停任务", command=self.pause_task, state='disabled')
+        self.pause_button.pack(side=tk.LEFT, padx=5)
         
         # 进度条
         self.progress = ttk.Progressbar(main_frame, length=400, mode='determinate')
@@ -255,7 +264,9 @@ class WeChatSenderGUI:
                 return
                 
             self.running = True
+            self.paused = False
             self.start_button.config(state='disabled')
+            self.pause_button.config(state='normal')
             
             # 获取输入
             friend_name = self.friend_name.get()
@@ -270,6 +281,20 @@ class WeChatSenderGUI:
             logging.error(f"启动任务失败: {str(e)}")
             self.running = False
             self.start_button.config(state='normal')
+            self.pause_button.config(state='disabled')
+    
+    def pause_task(self):
+        """暂停或恢复任务"""
+        if not self.running:
+            return
+            
+        self.paused = not self.paused
+        if self.paused:
+            self.pause_button.config(text="继续任务")
+            logging.info("任务已暂停")
+        else:
+            self.pause_button.config(text="暂停任务")
+            logging.info("任务已继续")
         
     def update_log_display(self):
         """更新日志显示"""
@@ -297,29 +322,41 @@ class WeChatSenderGUI:
             target_timestamp = datetime_to_timestamp(target_time)
             self.countdown(target_timestamp)
             
-            # 发送消息
-            if send_precise_message():
-                logging.info("消息发送成功！")
-            else:
-                logging.error("消息发送失败！")
+            # 如果是暂停状态，不发送消息
+            if not self.paused and self.running:
+                # 发送消息
+                if send_precise_message():
+                    logging.info("消息发送成功！")
+                else:
+                    logging.error("消息发送失败！")
                 
         except Exception as e:
             logging.error(f"发生错误: {str(e)}")
         finally:
             self.running = False
+            self.paused = False
             self.root.after(0, lambda: self.start_button.config(state='normal'))
+            self.root.after(0, lambda: self.pause_button.config(state='disabled', text="暂停任务"))
             
     def countdown(self, target_timestamp):
         """倒计时并更新进度条"""
         start_time = time.time()
+        elapsed_time = 0
         total_wait = target_timestamp - start_time
         
         while time.time() < target_timestamp:
             if not self.running:
                 break
                 
-            elapsed = time.time() - start_time
-            progress = min(100, (elapsed / total_wait) * 100)
+            if self.paused:
+                # 暂停时更新起始时间和总等待时间
+                start_time = time.time() - elapsed_time
+                total_wait = target_timestamp - start_time
+                time.sleep(0.1)
+                continue
+                
+            elapsed_time = time.time() - start_time
+            progress = min(100, (elapsed_time / total_wait) * 100)
             self.root.after(0, lambda p=progress: self.progress.configure(value=p))
             time.sleep(0.1)
 
